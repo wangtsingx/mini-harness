@@ -19,3 +19,7 @@ class Session:
     # Provider-reported size of the last request and how many messages it contained (ground truth for sizing)
     last_prompt_tokens: int = 0
     last_prompt_msgs: int = 0
+    # Persistence bookkeeping (see mini_harness.session)
+    branch: str = "main"
+    head: int | None = None  # id of the checkpoint this state descends from
+    status: str = "created"  # created | running | completed | <stop reason> | cancelled | failed

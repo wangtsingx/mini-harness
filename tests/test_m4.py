@@ -327,3 +327,48 @@ def test_loop_records_provider_reported_prompt_size():
 
     run(go())
     assert session.last_prompt_tokens == 1123 and session.last_prompt_msgs == 1
+
+
+# ---- compaction must never churn (found by the eval self-check)
+def test_huge_protected_tail_is_left_alone_instead_of_churning():
+    """One giant tool result as the newest unit cannot be compacted. Summarizing the few small messages before it
+    would ADD tokens and re-trigger on every turn (each time paying for a summary call)."""
+    msgs = [
+        Message.user("remember CODE-1"),
+        Message.assistant([ToolUseBlock("t0", "big", {})]),
+        Message.tool_results([ToolResultBlock("t0", "x" * 24_000)]),
+    ]
+    s = Session(messages=msgs)
+    before = list(s.messages)
+    assert run(ContextManager(CFG, Boom()).prepare(s, "", [])) is None  # Boom: the summarizer must not even be called
+    assert s.messages == before and s.compactions == 0 and not s.archive
+
+
+def test_a_summary_that_is_not_smaller_is_discarded_but_its_cost_is_reported():
+    class Wordy:
+        async def summarize(self, old):
+            return make_summary_message("w " * 60_000, len(old)), Usage(111, 222)
+
+    s = long_text_session()
+    original = list(s.messages)
+    c = run(ContextManager(CFG, Wordy()).prepare(s, "", []))
+    assert c.stage == "skipped" and c.archived == 0 and c.usage == Usage(111, 222) and c.tokens_after == c.tokens_before
+    assert s.messages == original and s.compactions == 0
+
+
+def test_loop_does_not_emit_compactions_for_an_unhelpful_giant_result():
+    reg = ToolRegistry()
+
+    @reg.tool()
+    def huge() -> str:
+        """24k chars"""
+        return "x" * 24_000
+
+    script = [tool_turn(("a", "huge", {}), usage=Usage(100, 5)), text_turn("done", usage=Usage(6000, 5))]
+    agent = Agent(FakeProvider(script), reg, model="m", context=CFG, compactor=Boom())
+    events = run(drain_events(agent))
+    assert not [e for e in events if isinstance(e, Compacted)] and events[-1].reason == "end_turn"
+
+
+async def drain_events(agent):
+    return [e async for e in agent.run("go", agent.new_session())]

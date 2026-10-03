@@ -21,3 +21,27 @@ class ProviderError(HarnessError):
 
 class TransientToolError(Exception):
     """Raise from a tool to signal a temporary failure. Idempotent tools are retried on it."""
+
+
+class SessionNotFound(HarnessError):
+    pass
+
+
+class CheckpointNotFound(HarnessError):
+    pass
+
+
+class StaleSessionError(HarnessError):
+    """The branch head moved since this Session was loaded (concurrent writer or reused session id)."""
+
+
+class ToolError(Exception):
+    """Raise from a tool for an EXPECTED failure. The message goes to the model verbatim (no exception-type prefix)."""
+
+
+class ArgumentError(ValueError):
+    """Tool arguments failed validation. `problems` are short, model-readable messages."""
+
+    def __init__(self, problems: list[str]) -> None:
+        super().__init__("; ".join(problems))
+        self.problems = problems

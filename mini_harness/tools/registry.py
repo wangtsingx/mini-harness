@@ -17,10 +17,11 @@ from mini_harness.tools.spec import Permission, ToolSpec
 class Tool:
     spec: ToolSpec
     fn: Callable[..., Any]
-    args_model: type[BaseModel]
+    args_model: type[BaseModel] | None = None  # subclasses (e.g. McpTool) may validate differently
 
     def validate(self, raw: dict[str, Any]) -> dict[str, Any]:
-        """Raises pydantic.ValidationError on bad input (extra keys are rejected)."""
+        """Raises pydantic.ValidationError (or ArgumentError) on bad input; extra keys are rejected."""
+        assert self.args_model is not None
         model = self.args_model(**raw)
         return {name: getattr(model, name) for name in type(model).model_fields}
 

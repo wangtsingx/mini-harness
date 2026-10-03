@@ -34,6 +34,8 @@ class ContextConfig:
     trim_min_chars: int = 1_000  # tool results longer than this (in the old part) are trimmed
     trim_preview_chars: int = 200
     enabled: bool = True
+    min_gain_ratio: float = 0.05  # don't summarize an old segment smaller than this fraction of the window
+    prompt_caching: bool = True  # False = never send cache breakpoints (for A/B cost measurements)
 
     def __post_init__(self) -> None:
         if not (0 < self.recent_ratio < self.target_ratio < self.compact_threshold < 1):
@@ -44,7 +46,7 @@ class ContextConfig:
 
 @dataclass(frozen=True)
 class Compaction:
-    stage: str  # trim | summary | extractive
+    stage: str  # trim | summary | extractive | skipped (summary was not smaller: history unchanged)
     tokens_before: int
     tokens_after: int
     archived: int  # original messages moved to Session.archive
@@ -61,6 +63,10 @@ class ContextManager:
         self._cfg = config or ContextConfig()
         self._compactor = compactor
         self._fallback = fallback or ExtractiveCompactor()
+
+    @property
+    def caching_enabled(self) -> bool:
+        return self._cfg.prompt_caching
 
     # ------------------------------------------------------------ size
     def estimate(self, session: Session, system: str, tools: list[ToolSpec]) -> int:
@@ -92,10 +98,18 @@ class ContextManager:
             changed = [o for o, t in zip(old, trimmed[:cut], strict=True) if o is not t]
             return self._commit(session, trimmed, changed, "trim", before, after, Usage())
 
-        # stage 2: fold the old segment into one summary message
+        # stage 2: fold the old segment into one summary message - but only if there is something worth reclaiming.
+        # (A huge protected tail, e.g. one giant tool result, cannot be compacted; summarizing the few small
+        # messages before it would add tokens and re-trigger on every turn.)
+        old_trimmed = estimate_messages(trimmed[:cut])
+        if old_trimmed < cfg.min_gain_ratio * cfg.context_window:
+            return None
         summary, usage, stage = await self._summarize(trimmed[:cut])
+        summary_tokens = estimate_message(summary)
+        if summary_tokens >= old_trimmed:  # the summary did not shrink anything: keep history, report the spend
+            return Compaction("skipped", before, before, 0, usage)
         new = [summary, *msgs[cut:]]
-        after = before - (old_tokens - estimate_message(summary))
+        after = before - (old_tokens - summary_tokens)
         return self._commit(session, new, old, stage, before, after, usage)
 
     async def _summarize(self, old: list[Message]) -> tuple[Message, Usage, str]:
